@@ -1,0 +1,6 @@
+{
+  "name": "Organization Workspace",
+  "description": "A collaborative organizational workspace with automated workflows, team chat, task prioritization, Gmail mailing integration, and central AI monitoring, backed by Google Drive storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
