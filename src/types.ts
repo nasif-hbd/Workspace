@@ -60,6 +60,34 @@ export interface OrganizationInfo {
   mergeCode: string;
 }
 
+export interface JarvisMemoryEntry {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  createdAt: string;
+  actions?: JarvisAction[];
+}
+
+export type JarvisActionName = 'create_task' | 'update_task_stage' | 'draft_email' | 'flag_alert';
+
+export interface JarvisAction {
+  name: JarvisActionName;
+  args: Record<string, any>;
+  status: 'applied' | 'failed';
+  resultSummary: string;
+}
+
+export type AlertSeverity = 'Critical' | 'Warning' | 'Info';
+
+export interface JarvisAlert {
+  id: string;
+  severity: AlertSeverity;
+  title: string;
+  detail: string;
+  createdAt: string;
+  dismissed: boolean;
+}
+
 export interface WorkspaceData {
   organization: OrganizationInfo | null;
   profiles: UserProfile[];
@@ -67,6 +95,8 @@ export interface WorkspaceData {
   messages: ChatMessage[];
   workflows: Workflow[];
   aiTrainingDoc: string;
+  jarvisMemory: JarvisMemoryEntry[];
+  jarvisAlerts: JarvisAlert[];
 }
 
 export type UITheme = 'Whitish Modern' | 'Black Modern';

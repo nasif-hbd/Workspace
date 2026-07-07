@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Mail, Send, FileText, CheckCircle, AlertOctagon, RefreshCw, Layers, Users } from 'lucide-react';
+import { Mail, Send, FileText, CheckCircle, AlertOctagon, RefreshCw, Layers, Users, Bot } from 'lucide-react';
 import { sendGmailEmail, getGoogleContacts } from '../googleApi';
+
+export interface MailDraft {
+  id: string;
+  to: string;
+  subject: string;
+  body: string;
+}
 
 interface MailComposerProps {
   accessToken: string | null;
   theme: 'Whitish Modern' | 'Black Modern';
-  profiles: { id: string; name: string; email: string; role: string }[];
+  profiles: { id: string; name: string; role: string; email: string }[];
+  prefill?: MailDraft | null;
 }
 
 interface SentRecord {
@@ -20,6 +28,7 @@ export default function MailComposer({
   accessToken,
   theme,
   profiles,
+  prefill,
 }: MailComposerProps) {
   const [to, setTo] = useState('');
   const [subject, setSubject] = useState('');
@@ -29,8 +38,19 @@ export default function MailComposer({
   const [statusMessage, setStatusMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [googleContacts, setGoogleContacts] = useState<{ name: string; email: string }[]>([]);
   const [isSyncingContacts, setIsSyncingContacts] = useState(false);
+  const [appliedDraftId, setAppliedDraftId] = useState<string | null>(null);
 
   const isDark = theme === 'Black Modern';
+
+  // Apply a draft handed off from JARVIS whenever a new one arrives
+  useEffect(() => {
+    if (prefill && prefill.id !== appliedDraftId) {
+      setTo(prefill.to);
+      setSubject(prefill.subject);
+      setBody(prefill.body);
+      setAppliedDraftId(prefill.id);
+    }
+  }, [prefill, appliedDraftId]);
 
   useEffect(() => {
     if (accessToken) {
@@ -151,10 +171,17 @@ export default function MailComposer({
           </div>
         </div>
 
+        {prefill && prefill.id === appliedDraftId && (
+          <div className="p-3 rounded-xl border text-[11px] mb-4 flex items-center gap-2 bg-sky-500/10 border-sky-500/20 text-sky-600 dark:text-sky-400">
+            <Bot className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>JARVIS drafted this message for your review before sending.</span>
+          </div>
+        )}
+
         {statusMessage && (
           <div className={`p-4 rounded-xl border text-xs mb-4 flex items-center gap-2 ${
-            statusMessage.error 
-              ? 'bg-red-500/10 border-red-500/20 text-red-500' 
+            statusMessage.error
+              ? 'bg-red-500/10 border-red-500/20 text-red-500'
               : 'bg-emerald-50 text-emerald-700 border-emerald-150'
           }`}>
             {statusMessage.error ? <AlertOctagon className="w-4 h-4 text-red-500" /> : <CheckCircle className="w-4 h-4 text-emerald-500" />}

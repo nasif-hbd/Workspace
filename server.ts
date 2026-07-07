@@ -175,6 +175,257 @@ app.post('/api/gemini/generate-image', async (req, res) => {
 });
 
 // ----------------------------------------------------
+// J.A.R.V.I.S. AGENT ENDPOINTS
+// ----------------------------------------------------
+
+const JARVIS_PERSONA = `You are J.A.R.V.I.S., a personal AI agent embedded into this user's "Workspace OS". You speak with the calm, dry-witted, unfailingly polite tone of a world-class British executive assistant: concise, a little understated, occasionally wry, never obsequious. Address the user respectfully but naturally (their name if known, otherwise "sir" or "boss" sparingly, not every line).
+
+You are not just a chatbot - you are an agent with real capabilities inside this workspace. When the user asks you to actually do something (create a task, move a task to a new stage, draft an email, or raise an alert), call the matching tool instead of only describing it in text. Only use tools when the user's intent is genuinely actionable; for questions or conversation, just reply normally. You may call multiple tools in one turn if the request calls for it. After deciding on tool calls, you do not need to also restate every detail in text - a brief acknowledgement is enough, the UI will show the executed action separately.`;
+
+function buildJarvisSystemPrompt(workspaceInfo: any, trainingDoc: string, currentUser: any): string {
+  return `${JARVIS_PERSONA}
+
+Founder/Org alignment guidelines to respect:
+"""
+${trainingDoc || 'None supplied yet.'}
+"""
+
+Current user you are speaking with: ${currentUser?.name || 'Unknown'} (${currentUser?.role || 'Unknown role'})
+Organization: ${workspaceInfo?.organization?.orgName || 'N/A'}
+Team capacity: ${workspaceInfo?.profiles?.length || 0}/${workspaceInfo?.organization?.teamCapacity || 'N/A'}
+
+Active tasks:
+${JSON.stringify(workspaceInfo?.tasks || [])}
+
+Team profiles (use "id" as assigneeId when creating a task for a specific person, or "Personal" for the current user):
+${JSON.stringify((workspaceInfo?.profiles || []).map((p: any) => ({ id: p.id, name: p.name, role: p.role })))}`;
+}
+
+const JARVIS_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: 'create_task',
+        description: 'Create a new task on the workspace task board.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING', description: 'Short task title' },
+            description: { type: 'STRING', description: 'Task details' },
+            priority: { type: 'STRING', enum: ['High', 'Medium', 'Low'] },
+            assigneeId: { type: 'STRING', description: 'Profile id to assign to, or "Personal"' },
+          },
+          required: ['title', 'priority'],
+        },
+      },
+      {
+        name: 'update_task_stage',
+        description: "Move an existing task to a new stage. Match the task by its title (fuzzy match is fine).",
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            taskTitle: { type: 'STRING' },
+            stage: { type: 'STRING', enum: ['To-Do', 'In-Progress', 'Review', 'Completed'] },
+          },
+          required: ['taskTitle', 'stage'],
+        },
+      },
+      {
+        name: 'draft_email',
+        description: 'Draft an email for the user to review in the Gmail Sender tab before sending. This does NOT send the email.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            to: { type: 'STRING', description: 'Recipient email address, if known' },
+            subject: { type: 'STRING' },
+            body: { type: 'STRING' },
+          },
+          required: ['subject', 'body'],
+        },
+      },
+      {
+        name: 'flag_alert',
+        description: 'Raise a proactive alert/notification in the JARVIS alerts panel for the user to see.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            severity: { type: 'STRING', enum: ['Critical', 'Warning', 'Info'] },
+            title: { type: 'STRING' },
+            detail: { type: 'STRING' },
+          },
+          required: ['severity', 'title', 'detail'],
+        },
+      },
+    ],
+  },
+];
+
+// Conversational JARVIS endpoint with real tool-use/function-calling
+app.post('/api/jarvis/chat', async (req, res) => {
+  try {
+    const { message, history, workspaceInfo, trainingDoc, currentUser } = req.body;
+    const ai = getAiClient();
+
+    if (!ai) {
+      return res.json({
+        text: `JARVIS core offline, sir - no \`GEMINI_API_KEY\` detected. I can still see your workspace has **${workspaceInfo?.tasks?.length || 0}** tasks logged, but I'll need my reasoning core connected before I can act on your behalf. Connect the key in the Secrets panel and I'll be fully operational.`,
+        actions: [],
+      });
+    }
+
+    const contents = (history || []).map((h: any) => ({
+      role: h.role === 'user' ? 'user' : 'model',
+      parts: [{ text: h.text }],
+    }));
+    contents.push({ role: 'user', parts: [{ text: message }] });
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents,
+      config: {
+        systemInstruction: buildJarvisSystemPrompt(workspaceInfo, trainingDoc, currentUser),
+        tools: JARVIS_TOOLS,
+      },
+    });
+
+    const calls = response.functionCalls || [];
+    const actions = calls.map((c: any) => ({ name: c.name, args: c.args || {} }));
+    let text = response.text || '';
+    if (!text && actions.length > 0) {
+      text = 'Right away.';
+    }
+
+    return res.json({ text, actions });
+  } catch (error: any) {
+    console.error('JARVIS chat route error:', error);
+    return res.json({
+      text: `Apologies, I hit some turbulence processing that request. (${error?.message || 'unknown error'})`,
+      actions: [],
+      error: error?.message || String(error),
+    });
+  }
+});
+
+// Scans a single email and extracts actionable follow-up tasks
+app.post('/api/jarvis/email-scan', async (req, res) => {
+  try {
+    const { from, subject, body } = req.body;
+    const ai = getAiClient();
+
+    if (!ai) {
+      return res.json({
+        summary: 'JARVIS core offline: connect a GEMINI_API_KEY to enable email intelligence scanning.',
+        requiresAction: false,
+        actionItems: [],
+      });
+    }
+
+    const prompt = `Analyze this email and extract concrete follow-up tasks a team member should track. If it is pure noise (newsletters, receipts, automated notices) with nothing actionable, return an empty actionItems array and requiresAction: false.
+
+From: ${from || 'unknown'}
+Subject: ${subject || '(no subject)'}
+Body:
+"""
+${(body || '').slice(0, 6000)}
+"""`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            summary: { type: 'STRING' },
+            requiresAction: { type: 'BOOLEAN' },
+            actionItems: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  title: { type: 'STRING' },
+                  priority: { type: 'STRING', enum: ['High', 'Medium', 'Low'] },
+                },
+                required: ['title', 'priority'],
+              },
+            },
+          },
+          required: ['summary', 'requiresAction', 'actionItems'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({
+      summary: parsed.summary || 'No summary available.',
+      requiresAction: !!parsed.requiresAction,
+      actionItems: parsed.actionItems || [],
+    });
+  } catch (error: any) {
+    console.error('JARVIS email-scan route error:', error);
+    // Always resolve with the expected shape so the client never has to guess about a failed scan.
+    res.json({
+      summary: `Scan failed: ${error?.message || 'unknown error'}`,
+      requiresAction: false,
+      actionItems: [],
+    });
+  }
+});
+
+// Proactive workspace briefing - JARVIS reviews live state and surfaces alerts unprompted
+app.post('/api/jarvis/briefing', async (req, res) => {
+  try {
+    const { workspaceInfo, trainingDoc } = req.body;
+    const ai = getAiClient();
+
+    if (!ai) {
+      return res.json({ alerts: [] });
+    }
+
+    const prompt = `You are JARVIS, proactively monitoring this organization's workspace like a diagnostics system watching for trouble. Review the live state below and surface ONLY genuinely noteworthy issues: high-priority tasks stuck in To-Do or In-Progress, team capacity near its limit, unassigned high-priority work, or workflows that look stale. Do not invent problems - if things look healthy, return an empty alerts array.
+
+Organization: ${workspaceInfo?.organization?.orgName || 'N/A'}
+Team capacity: ${workspaceInfo?.profiles?.length || 0}/${workspaceInfo?.organization?.teamCapacity || 'N/A'}
+Tasks: ${JSON.stringify(workspaceInfo?.tasks || [])}
+Founder guidelines: ${trainingDoc || 'none'}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            alerts: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  severity: { type: 'STRING', enum: ['Critical', 'Warning', 'Info'] },
+                  title: { type: 'STRING' },
+                  detail: { type: 'STRING' },
+                },
+                required: ['severity', 'title', 'detail'],
+              },
+            },
+          },
+          required: ['alerts'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{"alerts":[]}');
+    return res.json({ alerts: parsed.alerts || [] });
+  } catch (error: any) {
+    console.error('JARVIS briefing route error:', error);
+    // Fail quiet: a broken briefing should never surface as a UI crash, just skip this cycle.
+    res.json({ alerts: [] });
+  }
+});
+
+// ----------------------------------------------------
 // VITE OR STATIC SERVING MIDDLEWARE
 // ----------------------------------------------------
 async function startServer() {

@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { WorkspaceData, UserProfile, Task, ChatMessage, Workflow, UITheme, Role, TaskStage, TaskPriority, UserStatus } from './types';
+import { WorkspaceData, UserProfile, Task, ChatMessage, Workflow, UITheme, Role, TaskStage, TaskPriority, UserStatus, JarvisMemoryEntry, JarvisAlert } from './types';
 import { getGoogleUserProfile, findWorkspaceFile, downloadWorkspaceFile, createWorkspaceFileInDrive, updateWorkspaceFileInDrive, sendGmailEmail } from './googleApi';
 import { Loader2, Moon, Sun, Users, MessageSquare, ClipboardList, Settings, LogIn, LogOut, CheckSquare, Sparkles, RefreshCw, Key, Building2, Flame, AlertTriangle, Laptop, Smartphone, Tablet, Tv, Cpu, Info, Check, X, Shield, Activity, Radio } from 'lucide-react';
 import TaskBoard from './components/TaskBoard';
 import ChatAndAI from './components/ChatAndAI';
 import WorkflowManager from './components/WorkflowManager';
-import MailComposer from './components/MailComposer';
+import MailComposer, { MailDraft } from './components/MailComposer';
 import ImageStudio from './components/ImageStudio';
 import AdminPanel from './components/AdminPanel';
+import Jarvis from './components/Jarvis';
 import AuthPortalWindow from './components/AuthPortalWindow';
 
 export interface DeviceDiagnostics {
@@ -127,7 +128,9 @@ const INITIAL_WORKSPACE_STATE: WorkspaceData = {
   tasks: [],
   messages: [],
   workflows: [],
-  aiTrainingDoc: 'Always maintain polite communication alignment. Address high SLAs, maintain professional, fast responses, and prevent misinformation.'
+  aiTrainingDoc: 'Always maintain polite communication alignment. Address high SLAs, maintain professional, fast responses, and prevent misinformation.',
+  jarvisMemory: [],
+  jarvisAlerts: []
 };
 
 export default function App() {
@@ -141,6 +144,9 @@ export default function App() {
   const [isDiagnosticOpen, setIsDiagnosticOpen] = useState(false);
   const [simulatedType, setSimulatedType] = useState<'auto' | 'phone' | 'tablet' | 'desktop'>('auto');
   const [isAuthPortalSimulatedOpen, setIsAuthPortalSimulatedOpen] = useState(false);
+
+  // JARVIS handoff state - a drafted email waiting to be reviewed in the Mail Composer
+  const [pendingMailDraft, setPendingMailDraft] = useState<MailDraft | null>(null);
 
   useEffect(() => {
     const updateDiagnostics = () => {
@@ -284,7 +290,8 @@ export default function App() {
       'https://www.googleapis.com/auth/userinfo.profile',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/drive.file',
-      'https://www.googleapis.com/auth/gmail.send'
+      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/gmail.readonly'
     ].join(' ');
 
     const oauthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${client_id}&redirect_uri=${encodeURIComponent(
@@ -365,7 +372,9 @@ export default function App() {
         tasks: [],     // Keep 0 tasks initially
         messages: [],  // Keep 0 messages initially
         workflows: [], // Keep 0 workflows initially
-        aiTrainingDoc: 'Always maintain polite communication alignment. Address high SLAs, maintain professional, fast responses, and prevent misinformation.'
+        aiTrainingDoc: 'Always maintain polite communication alignment. Address high SLAs, maintain professional, fast responses, and prevent misinformation.',
+        jarvisMemory: [],
+        jarvisAlerts: []
       };
 
       saveWorkspaceData(updated);
@@ -591,6 +600,29 @@ export default function App() {
   const handleDeleteTask = (taskId: string) => {
     const nextTasks = data.tasks.filter((t) => t.id !== taskId);
     saveWorkspaceData({ ...data, tasks: nextTasks });
+  };
+
+  // Used by JARVIS to move a task by fuzzy title match instead of a known id
+  const handleUpdateTaskStageByTitle = (taskTitle: string, stage: TaskStage): boolean => {
+    const needle = taskTitle.trim().toLowerCase();
+    const match = data.tasks.find((t) => t.title.toLowerCase().includes(needle) || needle.includes(t.title.toLowerCase()));
+    if (!match) return false;
+    handleUpdateTaskStage(match.id, stage);
+    return true;
+  };
+
+  // JARVIS Operations - conversation memory, proactive alerts, and email draft handoff
+  const handleSaveJarvisMemory = (memory: JarvisMemoryEntry[]) => {
+    saveWorkspaceData({ ...data, jarvisMemory: memory.slice(-60) });
+  };
+
+  const handleSaveJarvisAlerts = (alerts: JarvisAlert[]) => {
+    saveWorkspaceData({ ...data, jarvisAlerts: alerts.slice(0, 40) });
+  };
+
+  const handleJarvisDraftEmail = (to: string, subject: string, body: string) => {
+    setPendingMailDraft({ id: `draft_${Date.now()}`, to, subject, body });
+    setActiveTab('mailing');
   };
 
   // 2. Chat Operations
@@ -982,6 +1014,7 @@ export default function App() {
               accessToken={accessToken}
               theme={theme}
               profiles={data.profiles}
+              prefill={pendingMailDraft}
             />
           )}
 
@@ -1193,6 +1226,19 @@ export default function App() {
           }}
         />
       )}
+
+      {/* J.A.R.V.I.S. Personal Agent - globally available floating widget */}
+      <Jarvis
+        workspaceInfo={data}
+        currentUser={activeUserProfile}
+        accessToken={accessToken}
+        theme={theme}
+        onAddTask={handleAddTask}
+        onUpdateTaskStageByTitle={handleUpdateTaskStageByTitle}
+        onSaveMemory={handleSaveJarvisMemory}
+        onSaveAlerts={handleSaveJarvisAlerts}
+        onDraftEmail={handleJarvisDraftEmail}
+      />
     </div>
   );
 }

@@ -201,3 +201,66 @@ export async function getGoogleContacts(accessToken: string): Promise<{ name: st
   }
 }
 
+// Decodes a Gmail API base64url-encoded message body part
+function base64urlDecode(data: string): string {
+  try {
+    const normalized = data.replace(/-/g, '+').replace(/_/g, '/');
+    return decodeURIComponent(escape(atob(normalized)));
+  } catch (error) {
+    console.error('base64urlDecode error:', error);
+    return '';
+  }
+}
+
+export interface InboxMessage {
+  id: string;
+  from: string;
+  subject: string;
+  snippet: string;
+  body: string;
+  receivedAt: string;
+}
+
+// Fetch the most recent inbox messages for JARVIS's email monitoring
+export async function listRecentEmails(accessToken: string, maxResults: number = 8): Promise<InboxMessage[]> {
+  try {
+    const listRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&q=in:inbox`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!listRes.ok) {
+      throw new Error('Failed to list Gmail messages');
+    }
+    const listData = await listRes.json();
+    const ids: string[] = (listData.messages || []).map((m: any) => m.id);
+
+    const messages: InboxMessage[] = [];
+    for (const id of ids) {
+      const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!msgRes.ok) continue;
+      const msg = await msgRes.json();
+      const headers = msg.payload?.headers || [];
+      const getHeader = (name: string) => headers.find((h: any) => h.name === name)?.value || '';
+
+      const plainPart = msg.payload?.parts?.find((p: any) => p.mimeType === 'text/plain');
+      const dataField = plainPart?.body?.data || msg.payload?.body?.data;
+      const body = dataField ? base64urlDecode(dataField) : msg.snippet || '';
+
+      messages.push({
+        id: msg.id,
+        from: getHeader('From'),
+        subject: getHeader('Subject') || '(No subject)',
+        snippet: msg.snippet || '',
+        body,
+        receivedAt: getHeader('Date'),
+      });
+    }
+    return messages;
+  } catch (error) {
+    console.error('listRecentEmails error:', error);
+    return [];
+  }
+}
+
